@@ -1,0 +1,533 @@
+# ============================================================
+# 投标文件自动脱敏服务 · 规则库 v1.4
+# ============================================================
+# v1.4 修改：
+#   1. 表格新增“扫描所有单元格”能力，兼容 rowspan/colspan
+#   2. 新增 RED-27 表格联系电话（联系人及电话/负责人及电话）
+#   3. 新增 RED-29 表格证号列（证号/证书编号/注册号等）
+#   4. RED-25/26/08 增加 学校编号/No. 关键词
+#   5. 身份证图片支持上下拼接正反面拆分
+#   6. 证书 OCR 未识别编号时兜底遮底部左下角编号区域
+#
+# v1.3 修改：
+#   1. 投标函/响应函页面跳过 RED-10/21/23，报价大写、小写均保留
+#   2. RED-08 扩展人员证书/验证码关键词与编号格式
+#   3. 新增 RED-25 人员证书/社保验证码语义规则
+#   4. 新增 RED-26 表格“标签-值”证书编号规则
+#   5. 新增 RED-28 证件号码规则（只遮号码值）
+#   6. 身份证背面、蓝色印章、社保证明条码由服务层检测
+#
+# v1.2 修改：
+#   1. 新增 RED-23 小写金额（¥/￥/人民币金额），与 RED-21 大写金额互补
+#   2. 新增 RED-24 银行账号/长数字账号（16~25 位，排除身份证号）
+#   3. RED-09 增加 行号/行 号/联行号 关键词
+#   4. 身份证只遮头像 + 号码；公章误识别与身份证背面自动排除
+#
+# v1.1 相对 v1.0 的修改：
+#   1. WL-01 不再吞掉 18 位身份证号（先做 GB11643 校验，命中身份证则优先脱敏）
+#   2. WL-04 姓名改为“正则 + 上下文”双重判定，避免把“北京市”等短词白名单化
+#   3. 身份证校验统一为 gb11643（原 luhn_id 命名有误）
+#   4. 手机号统一全遮，不再遮中间 4 位
+#   5. 公章策略：默认不整框跳过，改为红章重叠检测 + 按规则可选跳过
+#   6. 新增：招标限价白名单；银行回执/凭证号/验证码/基本存款账户编号/
+#      开户许可证/学历职称证书编号/年度营业额/合同保密条款等规则
+#   7. 遮挡样式改为“物理移除 + 中性灰马赛克”
+#   8. Mineru bbox 坐标改为每页 0~1000 归一化（实测结论）
+# ============================================================
+
+version: "1.4"
+description: "投标文件敏感信息脱敏规则库（v1.4：补充表格联系电话/证号、上下拼接身份证、证书编号兜底）"
+
+# ------------------------------------------------------------
+# 全局配置
+# ------------------------------------------------------------
+global:
+  # Mineru bbox 使用每页 0~1000 归一化坐标（实测）。
+  # 换算：pdf_x = bbox_x / mineru_canvas * page_width
+  mineru_canvas: 1000
+  # 旧版 A4 固定系数，仅用于兼容历史脚本，请勿新用
+  mineru_scale: { x: 0.60, y: 0.85 }
+
+  # 外扩余量（point）
+  pad_default: 8
+  pad_amount: 12
+  pad_image: 4
+  pad_cell: 3
+
+  # 遮挡：先物理移除（底色纯黑）→ 自检 → 绘制马赛克
+  fill: [0, 0, 0]
+  mosaic:
+    enabled: true
+    tile_pt: 6
+    adaptive: true
+    max_tiles: 4000
+    palette:
+      - [72, 72, 72]
+      - [104, 104, 104]
+      - [136, 136, 136]
+      - [168, 168, 168]
+
+  # 像素自检（马赛克绘制前）
+  selfcheck:
+    dpi: 150
+    black_ratio: 0.98
+    black_threshold: 40
+    max_retry: 3
+    expand: 1.5
+
+  # 红章检测
+  seal:
+    r_min: 150
+    rg_min: 50
+    rb_min: 50
+    red_ratio_skip: 0.10
+
+# ------------------------------------------------------------
+# 白名单（优先级最高）
+#   type: value    —— 值本身命中即排除
+#   type: context  —— 仅当规则显式声明 whitelist 时才按关键词排除
+# ------------------------------------------------------------
+whitelist:
+  - id: WL-01
+    name: "统一社会信用代码"
+    type: value
+    pattern: '^[0-9A-Z]{18}$'
+    context_keywords: ["统一社会信用代码", "信用代码"]
+    # 证书/验证码等上下文中的 18 位编号不能当作统一社会信用代码放行
+    exclude_context: ["证书编号", "注册证书编号", "注册编号", "执业印章号", "执业证号", "资格证号", "验证码", "校验码", "查询码", "管理号", "毕业证书编号", "职称证书编号", "学位证书编号", "学历证书编号"]
+    # 若该 18 位串能通过身份证校验，则不得白名单化
+    exclude_if_checks: ["gb11643"]
+    reason: "企业身份信息，投标效力"
+
+  - id: WL-02
+    name: "资质证书名称/等级/有效期"
+    type: context
+    keywords: ["资质证书", "资质等级", "证书有效期", "发证机关"]
+    reason: "投标资质效力信息"
+
+  - id: WL-03
+    name: "业绩项目概况"
+    type: context
+    keywords: ["业绩", "项目概况", "已完工程", "类似工程", "合同名称"]
+    reason: "非敏感概况"
+
+  - id: WL-04
+    name: "姓名"
+    type: context
+    pattern: '^[\u4e00-\u9fa5]{2,4}$'
+    context_keywords: ["姓名", "法定代表人", "法人", "授权代表", "联系人", "项目负责人"]
+    reason: "投标效力，保留"
+
+  - id: WL-05
+    name: "签名"
+    type: context
+    keywords: ["签字", "签名", "盖章", "签署"]
+    reason: "投标效力，保留"
+
+  - id: WL-06
+    name: "公章"
+    detect: red_seal
+    reason: "投标效力，保留"
+
+  - id: WL-07
+    name: "招标限价/控制价"
+    type: context
+    keywords: ["招标限价", "招标控制价", "最高限价", "控制价", "预算金额"]
+    reason: "招标人公开信息，与投标报价区分"
+
+# ------------------------------------------------------------
+# 个人隐私类（必脱敏）
+# ------------------------------------------------------------
+personal:
+  - id: RED-01
+    name: "身份证号"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?<![0-9A-Za-z])[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?![0-9A-Za-z])'
+      verify: "gb11643"
+    redact: { mode: "card", scope: "整卡" }
+    protect_seal: false
+    confidence: 0.98
+
+  - id: RED-02
+    name: "身份证照片"
+    match:
+      type: "image"
+      detect: "id_card"
+      min_aspect: 1.25
+      max_aspect: 2.0
+      max_page_area_ratio: 0.45
+    redact: { mode: "image", scope: "整图" }
+    protect_seal: false
+    confidence: 0.90
+
+  - id: RED-03
+    name: "手机号"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?<!\d)1[3-9]\d{9}(?!\d)'
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.95
+
+  - id: RED-04
+    name: "固定电话"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?<!\d)0\d{2,3}-?\d{7,8}(?!\d)'
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.90
+
+  - id: RED-05
+    name: "个人邮箱"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.92
+
+  - id: RED-06
+    name: "家庭住址"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["住址", "家庭地址", "通讯地址", "联系地址", "现住址", "地址"]
+      scope: "after"
+      max_len: 60
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.80
+
+  - id: RED-07
+    name: "银行卡号"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?<![\dA-Za-z])\d{16,19}(?![\dA-Za-z])'
+      verify: "luhn"
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.92
+
+  - id: RED-08
+    name: "证书编号"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["注册证书编号", "注册编号", "资格证书编号", "毕业证书编号", "学历证书编号", "学位证书编号", "职称证书编号", "建造师注册号", "监理工程师注册号", "安全员证书编号", "执业印章号", "执业证号", "资格证号", "电子注册号", "证书编号", "社保验证码", "验证码", "校验码", "查询码", "管理号", "注册号", "证号", "学校编号", "No.", "NO.", "系统编码"]
+      exclude_context: ["身份证"]
+      scope: "after"
+      value_pattern: '(?:[A-Za-z0-9][A-Za-z0-9\-－\[\]〔〕()（）]{5,}|建\[造\][0-9]+|粤高职证字第[0-9]+号)'
+      max_len: 60
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.82
+
+  - id: RED-25
+    name: "人员证书/验证码"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["注册证书编号", "注册编号", "资格证书编号", "毕业证书编号", "学历证书编号", "学位证书编号", "职称证书编号", "建造师注册号", "监理工程师注册号", "安全员证书编号", "执业印章号", "执业证号", "资格证号", "电子注册号", "证书编号", "社保验证码", "验证码", "校验码", "查询码", "管理号", "注册号", "学校编号", "No.", "NO."]
+      scope: "after"
+      value_pattern: '(?:[A-Za-z0-9][A-Za-z0-9\-－\[\]〔〕()（）]{5,}|建\[造\][0-9]+|粤高职证字第[0-9]+号)'
+      max_len: 60
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.84
+
+  - id: RED-26
+    name: "表格证书编号/验证码"
+    match:
+      type: "table"
+      'on': "auto"
+      row_keywords: ["注册证书编号", "注册编号", "资格证书编号", "毕业证书编号", "学历证书编号", "学位证书编号", "职称证书编号", "建造师注册号", "监理工程师注册号", "安全员证书编号", "执业印章号", "执业证号", "资格证号", "电子注册号", "证书编号", "社保验证码", "验证码", "校验码", "查询码", "管理号", "注册号", "学校编号", "No.", "NO."]
+      value_positions: ["right", "below", "same"]
+      value_pattern: '(?:[A-Za-z0-9][A-Za-z0-9\-－\[\]〔〕()（）]{5,}|建\[造\][0-9]+|粤高职证字第[0-9]+号)'
+    redact: { mode: "cell", scope: "单元格" }
+    protect_seal: false
+    confidence: 0.86
+
+  - id: RED-27
+    name: "表格联系电话"
+    match:
+      type: "table"
+      'on': "auto"
+      column_headers: ["负责人及电话", "联系人及电话", "联系电话", "联系方式", "电话"]
+      scan_all_cells: true
+      value_pattern: '(?<!\d)(?:1[3-9]\d{9}|0\d{2,3}-?\d{7,8})(?!\d)'
+    redact: { mode: "cell", scope: "单元格" }
+    protect_seal: false
+    confidence: 0.90
+
+  - id: RED-29
+    name: "表格证号列"
+    match:
+      type: "table"
+      'on': "auto"
+      column_headers: ["证号", "证书编号", "注册证书编号", "注册编号", "注册号", "管理号", "资格证号", "执业印章号", "学校编号"]
+      scan_all_cells: true
+      value_pattern: '(?:[A-Za-z0-9][A-Za-z0-9\-－\[\]〔〕()（）]{5,}|建\[造\][0-9]+|粤高职证字第[0-9]+号)'
+    redact: { mode: "cell", scope: "单元格" }
+    protect_seal: false
+    confidence: 0.90
+
+  - id: RED-28
+    name: "证件号码"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["证件号码", "身份证号码", "公民身份号码", "身份证号"]
+      scope: "after"
+      value_pattern: '(?<![0-9A-Za-z])[1-9]\d{16}[0-9Xx](?![0-9A-Za-z])'
+      verify: "gb11643"
+      max_len: 30
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.96
+
+  - id: RED-09
+    name: "银行账号"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["账号", "账 号", "账户号码", "银行账号", "银行账 号", "存款账户", "开户许可", "核准号", "行号", "行 号", "联行号"]
+      scope: "after"
+      value_pattern: '[0-9][0-9\- ]{5,}[0-9]'
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.88
+
+  - id: RED-24
+    name: "银行账号/长数字账号"
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?<![\dA-Za-z])(?:\d[ -]?){15,24}\d(?![\dA-Za-z])'
+      verify: "not_gb11643"
+      exclude_context: ["身份证", "统一社会信用代码", "证书编号", "注册号", "管理号", "执业印章号", "验证码", "校验码", "查询码", "防伪码"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.9
+
+  - id: RED-22
+    name: "开户行名称"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["开户行名称", "开户银行", "开户行", "开户机构"]
+      exclude_context: ["账号", "账户号码"]
+      scope: "after"
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.78
+
+  - id: RED-16
+    name: "基本存款账户编号"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["基本存款账户编号", "基本账户编号", "开户许可证核准号"]
+      scope: "after"
+      value_pattern: '[A-Za-z0-9\-]{6,}'
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.85
+
+# ------------------------------------------------------------
+# 商业秘密类
+# ------------------------------------------------------------
+secret:
+  - id: RED-10
+    name: "投标函总报价"
+    skip_page_keywords: ["投标函", "响应函", "投标函及投标函附录"]
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["投标总价", "投标报价", "总报价", "投标函报价", "报价"]
+      scope: "after"
+      value_pattern: '(?:[¥￥]\s*)?(?:[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整]{2,})'
+      max_len: 60
+      whitelist: ["WL-07"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.88
+
+  - id: RED-11
+    name: "报价明细/合价"
+    match:
+      type: "table"
+      'on': "auto"
+      column_headers: ["单价", "合价", "金额", "费用", "合计", "含税", "总价"]
+      value_pattern: '[0-9][0-9,]*(?:\.[0-9]+)?'
+      min_value_len: 1
+      whitelist: ["WL-07"]
+    redact: { mode: "cell", scope: "单元格" }
+    protect_seal: false
+    confidence: 0.85
+
+  - id: RED-12
+    name: "成本构成/财务数据"
+    match:
+      type: "table"
+      'on': "auto"
+      column_headers: ["成本", "费用", "预算", "经费", "单价", "金额"]
+      value_pattern: '[0-9][0-9,]*(?:\.[0-9]+)?'
+      min_value_len: 1
+      whitelist: ["WL-07"]
+    redact: { mode: "cell", scope: "单元格" }
+    protect_seal: false
+    confidence: 0.80
+
+  - id: RED-13
+    name: "合同金额"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["合同金额", "合同总价", "合同价", "签约金额", "中标金额", "合同价款"]
+      scope: "after"
+      value_pattern: '(?:[¥￥]\s*)?(?:[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整]{2,})'
+      max_len: 60
+      whitelist: ["WL-07"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: true
+    confidence: 0.86
+
+  - id: RED-17
+    name: "投标/履约保证金"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["保证金", "投标保证金", "履约保证金", "保证金金额"]
+      scope: "after"
+      value_pattern: '(?:[¥￥]\s*)?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?'
+      max_len: 40
+      whitelist: ["WL-07"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.85
+
+  - id: RED-18
+    name: "银行回执凭证号/验证码"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["凭证号", "凭证编号", "流水号", "回单编号", "验证码", "校验码"]
+      scope: "after"
+      value_pattern: '[A-Za-z0-9\-]{4,}'
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.85
+
+  - id: RED-19
+    name: "年度营业额/业绩合同价格"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["年度营业额", "营业额", "营业收入", "销售收入", "年产值", "合同价格"]
+      scope: "after"
+      value_pattern: '(?:[¥￥]\s*)?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?'
+      max_len: 40
+      whitelist: ["WL-07"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.82
+
+  - id: RED-20
+    name: "合同保密条款"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["保密条款", "保密义务", "保密责任", "不得泄露"]
+      scope: "block"
+      max_len: 200
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: true
+    confidence: 0.70
+
+  - id: RED-21
+    name: "大写金额"
+    skip_page_keywords: ["投标函", "响应函", "投标函及投标函附录"]
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '[壹贰叁肆伍陆柒捌玖拾佰仟万亿零]{2,}[元圆](?:[零壹贰叁肆伍陆柒捌玖]角)?(?:[零壹贰叁肆伍陆柒捌玖]分)?整?'
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.88
+
+  - id: RED-23
+    name: "小写金额"
+    skip_page_keywords: ["投标函", "响应函", "投标函及投标函附录"]
+    match:
+      type: "regex"
+      'on': "auto"
+      pattern: '(?:[¥￥]\s*|人民币\s*)[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?'
+      whitelist: ["WL-07"]
+      exclude_context: ["统一社会信用代码", "身份证"]
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.90
+
+# ------------------------------------------------------------
+# 企业敏感联系类
+# ------------------------------------------------------------
+contact:
+  - id: RED-14
+    name: "联系人手机"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["联系人", "联系电话", "手机", "法定代表人", "法人", "电话"]
+      exclude_context: ["身份证"]
+      scope: "after"
+      value_pattern: '(?<!\d)1[3-9]\d{9}(?!\d)'
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.90
+
+  - id: RED-15
+    name: "私人微信"
+    match:
+      type: "semantic"
+      'on': "auto"
+      keywords: ["微信", "微信号", "WeChat"]
+      scope: "after"
+      value_pattern: '[A-Za-z][-_A-Za-z0-9]{5,19}'
+      max_len: 40
+      whitelist: []
+    redact: { mode: "rect", scope: "局部" }
+    protect_seal: false
+    confidence: 0.85
+
+# ------------------------------------------------------------
+# 遮挡方式：rect | card | image | cell
+# 定位方式：regex | semantic | table | image
+# 坐标约束：
+#   K1. 扫描图局部遮蔽必须用“图内坐标 -> 页面坐标”换算，禁止整页涂黑
+#   K2. 是否遮到位以“马赛克前纯黑像素检测”为权威
+#   K3. 长数字串需完整串匹配 + 前后缀保护
+#   K4. Mineru bbox 为每页 0~1000 归一化，换算 bbox/1000*page_size
+#   K5. 红章区域默认保留；仅 protect_seal=true 的规则在重叠时跳过
+# ============================================================

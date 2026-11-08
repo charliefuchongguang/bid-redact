@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+data/
+testdata/
+frontend/node_modules/
+frontend/dist/
+.git/
+.gitignore
+*.log
+docs/_local/

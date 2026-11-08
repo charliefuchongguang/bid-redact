@@ -1,0 +1,12 @@
+numpy>=1.26,<3
+onnx>=1.13
+onnxruntime>=1.20
+opencv-python-headless>=4.9
+scipy>=1.11
+scikit-image>=0.22
+tqdm>=4.66
+requests>=2.31
+# insightface 本身用以下命令安装，避免它自动拉取 opencv-python（GUI 版）：
+#   pip install --no-deps insightface==2.1
+# 然后执行：
+#   pip install -r requirements-face.txt
